@@ -1,0 +1,197 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+Convert season total statistics to per game statistics since not all teams play the same number of games
+```{r}
+df <- read.csv("ncaa.csv", header = T)
+df$FG <- df$FG / df$G
+df$FGA <- df$FGA / df$G
+df$X3P <- df$X3P / df$G
+df$X3PA <- df$X3PA / df$G
+df$FT <- df$FT / df$G
+df$FTA <- df$FTA / df$G
+df$ORB <- df$ORB / df$G
+df$TRB <- df$TRB / df$G
+df$AST <- df$AST / df$G
+df$STL <- df$STL / df$G
+df$BLK <- df$BLK / df$G
+df$TOV <- df$TOV / df$G
+df$PF <- df$PF / df$G
+```
+
+Use the mice package to impute missing data. Note: This takes multiple iterations to run
+```{r}
+library(mice)
+imputedData <- mice(data = df, m = 1)
+imputedData$imp
+imputed1 <- complete(imputedData, 1)
+```
+Compare histograms of imputed variables before and after imputation
+```{r}
+hist(df$homeW)
+hist(imputed1$homeW)
+hist(df$homeL)
+hist(imputed1$homeL)
+hist(df$awayW)
+hist(imputed1$awayW)
+hist(df$awayL)
+hist(imputed1$awayL)
+hist(df$Pace)
+hist(imputed1$Pace)
+hist(df$ORtg)
+hist(imputed1$ORtg)
+hist(df$STL.)
+hist(imputed1$STL.)
+hist(df$STL.)
+hist(imputed1$STL.)
+hist(df$ORB.)
+hist(imputed1$ORB.)
+# Add imputed values to data frame
+df <- imputed1
+rm(imputed1)
+```
+
+Normalize the data
+```{r}
+normalizeByYear <- function(year, column) {
+  df[,column][df$Year == year] <<- (df[,column][df$Year == year] - mean(df[,column][df$Year == year])) / sqrt(var(df[,column][df$Year == year]))
+}
+
+# Normalizes the data in each column for by a given year
+for (year in 1997:2017) {
+  for (column in c(17:29, 31:48)) {
+    normalizeByYear(year, column)
+  }
+}
+```
+
+```{r}
+# Remove flag for teams that qualified for NCAA Tournament
+df$School <- gsub(" NCAA", "", df$School)
+
+# Create dataframe with all variables and remove
+matchups <- df[df$School == "Arizona" & df$Year == 1997, -c(1,2)] - df[df$School == "Duke" & df$Year == 1997, -c(1,2)]
+matchups$title <- ""
+matchups$result <- 0
+matchups <- matchups[-1,]
+
+# Adds a specific matchup
+addMatchup <- function(higherSeed, lowerSeed, year, outcome) {
+  current <- df[df$School == higherSeed & df$Year == year, -c(1,2)] - df[df$School == lowerSeed & df$Year == year, -c(1,2)]
+  current$title <- paste(higherSeed, "vs", lowerSeed)
+  current$result <- as.factor(outcome)
+  matchups <<- rbind(matchups, current)
+}
+```
+
+Function used to manually add matchups, the comment below is just an example
+```{r}
+# addMatchup("Gonzaga", "North Carolina", 2017, 1)
+```
+
+Remove descriptive variables highly coordinated with other descriptive variables
+```{r}
+# Read matchups data frame
+matchups <- read.csv(file = "matchups.csv")
+# Show correlations
+cor(matchups[,-c(47,48)])
+matchups <- matchups[,-1]
+matchups <- matchups[,-4] # W.L column
+matchups <- matchups[,-40] # STL
+matchups <- matchups[,-40]# BLK columns
+matchups <- matchups[,-17]# x3PAr
+matchups <- matchups[,-17]# TS%
+matchups <- matchups[,-21]# EFG %
+matchups <- matchups[,-37]# TOV
+matchups <- matchups[,-3]# Overall L
+matchups <- matchups[,-6]# Conf L
+matchups <- matchups[,-10]# Own pts
+matchups <- matchups[,-10]# Opp pts
+matchups <- matchups[,-21]# FG
+matchups <- matchups[,-21]# FGA
+matchups <- matchups[,-1]# G
+matchups <- matchups[,-3]# SOS
+matchups <- matchups[,-7]# Away L
+matchups <- matchups[,-16]# FT/FGA
+matchups <- matchups[,-21]# FT
+matchups <- matchups[,-21]# FTA
+matchups <- matchups[,-22]# ORB
+matchups <- matchups[,-22]# TRB
+matchups <- matchups[,-16]# Year
+matchups <- matchups[,-17]# X3P
+matchups <- matchups[,-20]# AST
+matchups <- matchups[,-21]# OwnPPG
+matchups <- matchups[,-21]# OppPPG
+write.csv(matchups, "uncorrelated.csv")
+which(cor(matchups[,-c(21,22)]) > 0.80 & cor(matchups[,-c(21,22)]) != 1)
+```
+
+Logistic Regression Model
+```{r}
+set.seed(123)
+smp_size <- floor(0.7 * nrow(matchups))
+
+train_ind <- sample(seq_len(nrow(matchups)), size = smp_size)
+
+# Split into training and test data
+train <- matchups[train_ind, ]
+test <- matchups[-train_ind, ]
+logModel <- (glm(result ~ overallW + SRS + homeW + homeL + awayW
+              + FG. + X3PA , data = train[,-21]))
+
+summary(logModel)
+```
+Logistic Regression Performance
+```{r}
+# Vector of model predictions
+logPreds <- round(predict.glm(logModel, newdata = test))
+correct <- length(which(test$result == logPreds))
+accuracy <- correct/nrow(test)
+TP <- length(which(test$result == 1 & logPreds == 1))
+FN <- length(which(test$result == 1 & logPreds == 0))
+TN <- length(which(test$result == 0 & logPreds == 0))
+FP <- length(which(test$result == 0 & logPreds == 1))
+sensitivity <- TP / (TP + FN)
+specificity <- TN / (TN + FP)
+accuracy
+TP
+FN
+TN
+FP
+sensitivity
+specificity
+```
+Boosted Decision Tree
+```{r}
+library(gbm)
+dtModel <- gbm(result ~ .,data = train[,-21], distribution = "gaussian",n.trees = 15000,
+                  shrinkage = 0.001)
+summary(dtModel)
+# Matrix of predictions
+predmatrix <- predict(dtModel, newdata = test, n.trees = seq(from=100 ,to=15000, by=100))
+test.error<-with(test, apply((predmatrix-result)^2,2,mean))
+head(test.error)
+plot(seq(from=100 ,to=15000, by=100), test.error , pch=19,col="blue",xlab="Number of Trees",ylab="Error on Test Data", main = "Perfomance on Test Set")
+# Use tree with minimum error
+treePreds <- (round(predmatrix[,which(test.error == min(test.error))]))
+```
+Boosted Decision Tree 
+```{r}
+dtAccuracy <- length(which(treePreds == test$result)) / nrow(test)
+dtTP <- length(which(treePreds == 1 & test$result == 1))
+dtFN <- length(which(treePreds == 1 & test$result == 0))
+dtTN <- length(which(treePreds == 0 & test$result == 0))
+dtFP <- length(which(treePreds == 0 & test$result == 1))
+dtSensitivity <- dtTP / (dtTP + dtFN)
+dtSpecificity <- dtTN / (dtTN + dtFP)
+dtAccuracy
+dtTP
+dtFN
+dtTN
+dtFP
+dtSensitivity
+dtSpecificity
+```
+
